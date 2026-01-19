@@ -1,0 +1,183 @@
+import { Response } from 'express';
+import { AuthRequest } from '../types/auth.types';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+export const getAllProjects = async (req: AuthRequest, res: Response) => {
+  try {
+    const includeInactive = req.query.includeInactive === 'true';
+
+    const projects = await prisma.project.findMany({
+      where: includeInactive ? {} : { isActive: true },
+      include: {
+        manager: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+        costSharingFrom: {
+          include: {
+            destinationProject: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        },
+        _count: {
+          select: {
+            staff: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return res.json({ projects });
+  } catch (error) {
+    console.error('Get projects error:', error);
+    return res.status(500).json({ error: 'Failed to fetch projects' });
+  }
+};
+
+export const getProjectById = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const project = await prisma.project.findUnique({
+      where: { id },
+      include: {
+        manager: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+        costSharingFrom: {
+          include: {
+            destinationProject: true,
+          },
+        },
+        costSharingTo: {
+          include: {
+            sourceProject: true,
+          },
+        },
+        staff: {
+          where: { isActive: true },
+          select: {
+            id: true,
+            name: true,
+            position: true,
+            type: true,
+          },
+        },
+      },
+    });
+
+    if (!project) {
+      return res.status(404).json({ error: 'ไม่พบโครงการ' });
+    }
+
+    return res.json({ project });
+  } catch (error) {
+    console.error('Get project error:', error);
+    return res.status(500).json({ error: 'Failed to fetch project' });
+  }
+};
+
+export const createProject = async (req: AuthRequest, res: Response) => {
+  try {
+    const { name, location, themeColor, managerId, costSharing } = req.body;
+
+    // สร้างโครงการ
+    const project = await prisma.project.create({
+      data: {
+        name,
+        location,
+        themeColor: themeColor || '#3b82f6',
+        managerId,
+      },
+    });
+
+    // สร้าง Cost Sharing (ถ้ามี)
+    if (costSharing && costSharing.length > 0) {
+      await prisma.costSharing.createMany({
+        data: costSharing.map((cs: any) => ({
+          sourceProjectId: project.id,
+          destinationProjectId: cs.destinationProjectId,
+          percentage: cs.percentage,
+        })),
+      });
+    }
+
+    return res.status(201).json({ success: true, project });
+  } catch (error) {
+    console.error('Create project error:', error);
+    return res.status(500).json({ error: 'Failed to create project' });
+  }
+};
+
+export const updateProject = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { name, location, themeColor, managerId, costSharing } = req.body;
+
+    // Update project
+    const project = await prisma.project.update({
+      where: { id },
+      data: {
+        name,
+        location,
+        themeColor,
+        managerId,
+      },
+    });
+
+    // Update cost sharing
+    if (costSharing !== undefined) {
+      // Delete existing
+      await prisma.costSharing.deleteMany({
+        where: { sourceProjectId: id },
+      });
+
+      // Create new
+      if (costSharing.length > 0) {
+        await prisma.costSharing.createMany({
+          data: costSharing.map((cs: any) => ({
+            sourceProjectId: id,
+            destinationProjectId: cs.destinationProjectId,
+            percentage: cs.percentage,
+          })),
+        });
+      }
+    }
+
+    return res.json({ success: true, project });
+  } catch (error) {
+    console.error('Update project error:', error);
+    return res.status(500).json({ error: 'Failed to update project' });
+  }
+};
+
+export const deleteProject = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    // Soft delete
+    await prisma.project.update({
+      where: { id },
+      data: { isActive: false },
+    });
+
+    return res.json({ success: true, message: 'ปิดการใช้งานโครงการสำเร็จ' });
+  } catch (error) {
+    console.error('Delete project error:', error);
+    return res.status(500).json({ error: 'Failed to delete project' });
+  }
+};

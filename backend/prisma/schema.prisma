@@ -1,0 +1,191 @@
+// This is your Prisma schema file
+// Learn more: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== USER MANAGEMENT ====================
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      UserRole @default(SITE_MANAGER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  managedProjects Project[]
+
+  @@map("users")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  AREA_MANAGER
+  SITE_MANAGER
+}
+
+// ==================== PROJECT MANAGEMENT ====================
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  location    String?
+  themeColor  String   @default("#3b82f6")
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Manager
+  managerId String?
+  manager   User?   @relation(fields: [managerId], references: [id])
+
+  // Relations
+  staff            Staff[]
+  rosters          Roster[]
+  costSharingFrom  CostSharing[] @relation("SourceProject")
+  costSharingTo    CostSharing[] @relation("DestinationProject")
+
+  @@index([managerId])
+  @@map("projects")
+}
+
+// ==================== COST SHARING ====================
+// โครงสร้างสำหรับการแชร์ค่าใช้จ่ายระหว่างโครงการ
+model CostSharing {
+  id         String  @id @default(cuid())
+  percentage Float // สัดส่วน % (0-100)
+  
+  // โครงการต้นทาง (ที่จ่ายค่าใช้จ่าย)
+  sourceProjectId String
+  sourceProject   Project @relation("SourceProject", fields: [sourceProjectId], references: [id], onDelete: Cascade)
+  
+  // โครงการปลายทาง (ที่รับการแชร์ค่าใช้จ่าย)
+  destinationProjectId String
+  destinationProject   Project @relation("DestinationProject", fields: [destinationProjectId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sourceProjectId, destinationProjectId])
+  @@index([sourceProjectId])
+  @@index([destinationProjectId])
+  @@map("cost_sharing")
+}
+
+// ==================== STAFF MANAGEMENT ====================
+model Staff {
+  id          String     @id @default(cuid())
+  name        String
+  position    String
+  phone       String?
+  wagePerDay  Float // ค่าแรงต่อวัน
+  staffType   StaffType  @default(REGULAR)
+  
+  // สถานะ Active/Inactive (ไม่ลบทิ้ง เพื่อเก็บประวัติ)
+  isActive    Boolean    @default(true)
+  
+  // กะทำงานตั้งต้น
+  defaultShift String?   @default("1")
+  
+  // Project
+  projectId   String
+  project     Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // Relations
+  rosterEntries RosterEntry[]
+
+  @@index([projectId])
+  @@index([isActive])
+  @@map("staff")
+}
+
+enum StaffType {
+  REGULAR // พนักงานประจำ
+  SPARE   // พนักงานสแปร์/ทดแทน
+}
+
+// ==================== ROSTER MANAGEMENT ====================
+// ตารางเวรประจำเดือน
+model Roster {
+  id        String   @id @default(cuid())
+  year      Int      // พ.ศ.
+  month     Int      // 1-12
+  
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  entries RosterEntry[]
+
+  @@unique([projectId, year, month])
+  @@index([projectId, year, month])
+  @@map("rosters")
+}
+
+// รายการกะทำงานแต่ละวัน
+model RosterEntry {
+  id       String @id @default(cuid())
+  day      Int    // วันที่ 1-31
+  
+  // รหัสกะ: "1", "2", "3", "ดึก", "OFF", "ข" (ขาด), "ป" (ลาป่วย), "ก" (ลากิจ), "พ" (พักร้อน)
+  shiftCode String
+  
+  // หมายเหตุเพิ่มเติม (ถ้ามี)
+  notes    String?
+  
+  rosterId String
+  roster   Roster @relation(fields: [rosterId], references: [id], onDelete: Cascade)
+  
+  staffId  String
+  staff    Staff  @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([rosterId, staffId, day])
+  @@index([rosterId])
+  @@index([staffId])
+  @@map("roster_entries")
+}
+
+// ==================== ATTENDANCE & DEDUCTION ====================
+// สรุปการทำงานประจำเดือน (สำหรับออกรายงาน)
+model MonthlyAttendance {
+  id            String  @id @default(cuid())
+  staffId       String
+  rosterId      String
+  year          Int
+  month         Int
+  
+  // สถิติ
+  totalWorkDays    Int @default(0) // จำนวนวันทำงาน
+  totalAbsent      Int @default(0) // ขาด
+  totalSickLeave   Int @default(0) // ลาป่วย
+  totalPersonalLeave Int @default(0) // ลากิจ
+  totalVacation    Int @default(0) // พักร้อน
+  totalLate        Int @default(0) // มาสาย
+  
+  // การคำนวณเงิน
+  deductionAmount Float @default(0) // ยอดเงินที่ต้องหัก
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([staffId, year, month])
+  @@index([rosterId])
+  @@map("monthly_attendance")
+}
