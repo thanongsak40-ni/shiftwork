@@ -5,205 +5,117 @@ import {
   Button,
   Space,
   Table,
-  Tag,
   Modal,
   DatePicker,
   Statistic,
+  message,
   Row,
   Col,
-  message,
 } from 'antd';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import axios from 'axios';
 import dayjs, { Dayjs } from 'dayjs';
 import 'dayjs/locale/th';
 import buddhistEra from 'dayjs/plugin/buddhistEra';
+import { mockRosterEntries, mockShiftTypes } from '../data/mockData';
+import { useRosterStore } from '../stores/rosterStore';
+import { useProjectStore } from '../stores/projectStore';
+import { useStaffStore } from '../stores/staffStore';
 
 dayjs.extend(buddhistEra);
 dayjs.locale('th');
 
-const API_URL = 'http://localhost:3001/api';
-
-interface Project {
-  id: string;
-  name: string;
-}
-
 interface Staff {
   id: string;
+  code: string;
   name: string;
   position: string;
-  staffType: 'REGULAR' | 'SPARE';
-  isActive: boolean;
-}
-
-interface RosterMatrix {
-  [staffId: string]: {
-    staff: Staff;
-    days: {
-      [day: number]: {
-        shiftCode: string;
-        notes?: string;
-        entryId?: string;
-      };
-    };
-  };
-}
-
-interface Roster {
-  id: string;
   projectId: string;
-  year: number;
-  month: number;
-  daysInMonth: number;
-  matrix: RosterMatrix;
 }
-
-// Shift configurations with colors
-const SHIFT_CONFIGS: Record<string, { color: string; label: string }> = {
-  '1': { color: '#52c41a', label: 'กะ 1' },
-  '2': { color: '#1890ff', label: 'กะ 2' },
-  '3': { color: '#722ed1', label: 'กะ 3' },
-  'ดึก': { color: '#eb2f96', label: 'ดึก' },
-  'OFF': { color: '#d9d9d9', label: 'OFF' },
-  'ข': { color: '#ff4d4f', label: 'ขาด' },
-  'ป': { color: '#faad14', label: 'ลาป่วย' },
-  'ก': { color: '#fa8c16', label: 'ลากิจ' },
-  'พ': { color: '#13c2c2', label: 'พักร้อน' },
-};
-
-const SHIFT_OPTIONS = Object.entries(SHIFT_CONFIGS).map(([code, config]) => ({
-  value: code,
-  label: config.label,
-  color: config.color,
-}));
 
 const RosterPage: React.FC = () => {
-  const [selectedProjectId, setSelectedProjectId] = useState<string>('');
+  // Use global stores
+  const { projects } = useProjectStore();
+  const { getStaffByProject } = useStaffStore();
+  const { rosterChanges, updateRosterShift } = useRosterStore();
+  
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(projects[0]?.id || '');
   const [selectedDate, setSelectedDate] = useState<Dayjs>(dayjs());
+  const [selectedDay, setSelectedDay] = useState<number>(dayjs().date()); // วันที่เลือก default เป็นวันปัจจุบัน
+  const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
   const [editingCell, setEditingCell] = useState<{
     staffId: string;
     day: number;
+    currentShift: string;
   } | null>(null);
 
-  const queryClient = useQueryClient();
-
-  const year = selectedDate.year() + 543; // Convert to Buddhist year
+  const year = selectedDate.year();
   const month = selectedDate.month() + 1;
+  const daysInMonth = selectedDate.daysInMonth();
+  const today = dayjs();
+  const currentDay = today.date();
+  const isCurrentMonth = today.year() === year && today.month() + 1 === month;
 
-  // Fetch projects
-  const { data: projectsData } = useQuery({
-    queryKey: ['projects'],
-    queryFn: async () => {
-      const response = await axios.get(`${API_URL}/projects`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-      });
-      return response.data;
-    },
-  });
+  // Filter staff by project using store (only active staff)
+  const projectStaff = getStaffByProject(selectedProjectId).filter(staff => staff.isActive);
 
-  // Fetch roster
-  const { data: rosterData, isLoading } = useQuery<{ roster: Roster }>({
-    queryKey: ['roster', selectedProjectId, year, month],
-    queryFn: async () => {
-      const response = await axios.get(`${API_URL}/rosters`, {
-        params: { projectId: selectedProjectId, year, month },
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-      });
-      return response.data;
-    },
-    enabled: !!selectedProjectId,
-  });
-
-  // Update roster entry mutation
-  const updateMutation = useMutation({
-    mutationFn: async ({
-      rosterId,
-      staffId,
-      day,
-      shiftCode,
-    }: {
-      rosterId: string;
-      staffId: string;
-      day: number;
-      shiftCode: string;
-    }) => {
-      const token = localStorage.getItem('token');
-      return axios.post(
-        `${API_URL}/rosters/entry`,
-        { rosterId, staffId, day, shiftCode },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['roster'] });
-      setEditingCell(null);
-    },
-    onError: () => {
-      message.error('เกิดข้อผิดพลาดในการบันทึก');
-    },
-  });
-
-  // Handle cell click
+  // Handle cell click - open modal
   const handleCellClick = (staffId: string, day: number, currentShift: string) => {
-    if (!rosterData?.roster?.id) return;
-
-    // Cycle through common shifts: 1 -> 2 -> 3 -> OFF -> 1
-    const cycleShifts = ['1', '2', '3', 'OFF'];
-    const currentIndex = cycleShifts.indexOf(currentShift);
-    const nextShift = cycleShifts[(currentIndex + 1) % cycleShifts.length];
-
-    updateMutation.mutate({
-      rosterId: rosterData.roster.id,
-      staffId,
-      day,
-      shiftCode: nextShift,
-    });
+    setEditingCell({ staffId, day, currentShift });
+    setIsShiftModalOpen(true);
   };
 
-  // Calculate day statistics
-  const calculateDayStats = (day: number) => {
-    if (!rosterData?.roster) return null;
+  // Handle shift selection
+  const handleShiftSelect = (newShift: string) => {
+    if (editingCell) {
+      const { staffId, day } = editingCell;
+      
+      // Update roster changes in global store
+      updateRosterShift(staffId, day, newShift);
+      
+      const shiftName = mockShiftTypes.find((st) => st.code === newShift)?.name || newShift;
+      message.success(`เปลี่ยนกะเป็น ${shiftName}`);
+      setIsShiftModalOpen(false);
+      setEditingCell(null);
+    }
+  };
 
-    let working = 0;
-    let off = 0;
-    let absent = 0;
-    let leave = 0;
-
-    Object.values(rosterData.roster.matrix).forEach(({ days }) => {
-      const shift = days[day]?.shiftCode;
-      if (['1', '2', '3', 'ดึก'].includes(shift)) working++;
-      else if (shift === 'OFF') off++;
-      else if (shift === 'ข') absent++;
-      else if (['ป', 'ก', 'พ'].includes(shift)) leave++;
+  // Build roster matrix from entries (using January 2025 as example)
+  const rosterMatrix = useMemo(() => {
+    const matrix: Record<string, Record<number, string>> = {};
+    
+    // Use mock data from mockRosterEntries which is for January 2025
+    projectStaff.forEach((staff) => {
+      matrix[staff.id] = {};
+      for (let day = 1; day <= daysInMonth; day++) {
+        // Check if there's a manual change first
+        if (rosterChanges[staff.id]?.[day]) {
+          matrix[staff.id][day] = rosterChanges[staff.id][day];
+        } else {
+          // Find entry from mockRosterEntries
+          const entry = mockRosterEntries.find(
+            (e) => e.staffId === staff.id && e.day === day
+          );
+          matrix[staff.id][day] = entry?.shiftCode || 'OFF';
+        }
+      }
     });
 
-    return { working, off, absent, leave };
-  };
+    return matrix;
+  }, [projectStaff, daysInMonth, rosterChanges]);
 
   // Build table columns (days)
   const columns = useMemo(() => {
-    if (!rosterData?.roster) return [];
-
-    const daysInMonth = rosterData.roster.daysInMonth;
-    const baseColumns = [
+    const baseColumns: any[] = [
       {
         title: 'พนักงาน',
-        dataIndex: 'staff',
         key: 'staff',
         fixed: 'left' as const,
-        width: 200,
-        render: (_: any, record: any) => (
-          <Space direction="vertical" size="small">
-            <span style={{ fontWeight: 500 }}>{record.staff.name}</span>
-            <span style={{ fontSize: '12px', color: '#888' }}>
-              {record.staff.position}
+        width: 180,
+        render: (_: any, staff: Staff) => (
+          <Space direction="vertical" size={0}>
+            <span style={{ fontWeight: 500, fontSize: '11px' }}>{staff.name}</span>
+            <span style={{ fontSize: '10px', color: '#888' }}>
+              {staff.position}
             </span>
-            {record.staff.staffType === 'SPARE' && (
-              <Tag color="orange" style={{ fontSize: '10px' }}>
-                สแปร์
-              </Tag>
-            )}
           </Space>
         ),
       },
@@ -211,39 +123,54 @@ const RosterPage: React.FC = () => {
 
     // Add columns for each day
     for (let day = 1; day <= daysInMonth; day++) {
-      const stats = calculateDayStats(day);
+      const isToday = isCurrentMonth && day === currentDay;
+      const isSelected = day === selectedDay;
+      
       baseColumns.push({
         title: (
-          <div style={{ textAlign: 'center' }}>
-            <div>{day}</div>
-            {stats && (
-              <div style={{ fontSize: '10px', color: '#888' }}>
-                {stats.working}/{stats.off + stats.absent + stats.leave}
-              </div>
-            )}
+          <div 
+            style={{ 
+              textAlign: 'center', 
+              cursor: 'pointer',
+              padding: '2px',
+              borderRadius: '4px',
+              backgroundColor: isSelected ? '#1890ff' : 'transparent',
+              color: isSelected ? '#fff' : (isToday ? '#1890ff' : 'inherit'),
+            }}
+            onClick={() => setSelectedDay(day)}
+          >
+            <div style={{ 
+              fontWeight: isToday || isSelected ? 'bold' : 'normal',
+              fontSize: '11px',
+            }}>
+              {day}
+            </div>
           </div>
         ),
-        dataIndex: day.toString(),
         key: day.toString(),
-        width: 70,
-        render: (_: any, record: any) => {
-          const dayData = record.days[day];
-          const shiftCode = dayData?.shiftCode || 'OFF';
-          const config = SHIFT_CONFIGS[shiftCode] || SHIFT_CONFIGS['OFF'];
+        width: 32,
+        render: (_: any, staff: Staff) => {
+          const shiftCode = rosterMatrix[staff.id]?.[day] || 'OFF';
+          const shiftType = mockShiftTypes.find((st) => st.code === shiftCode);
 
+          const cellBackgroundColor = shiftType?.color || '#f0f0f0';
+          const textColor = shiftType?.isWorkShift ? '#fff' : '#595959';
+          
           return (
             <div
-              onClick={() => handleCellClick(record.staff.id, day, shiftCode)}
+              onClick={() => handleCellClick(staff.id, day, shiftCode)}
               style={{
                 cursor: 'pointer',
-                padding: '4px 8px',
+                padding: '3px 2px',
                 textAlign: 'center',
-                backgroundColor: config.color,
-                color: shiftCode === 'OFF' ? '#000' : '#fff',
-                borderRadius: '4px',
-                fontWeight: 'bold',
-                fontSize: '12px',
+                backgroundColor: cellBackgroundColor,
+                color: textColor,
+                borderRadius: '3px',
+                fontWeight: '600',
+                fontSize: '10px',
                 userSelect: 'none',
+                border: isSelected ? '2px solid #1890ff' : (isToday ? '2px solid #52c41a' : '1px solid #e8e8e8'),
+                transition: 'all 0.2s',
               }}
             >
               {shiftCode}
@@ -254,25 +181,46 @@ const RosterPage: React.FC = () => {
     }
 
     return baseColumns;
-  }, [rosterData]);
+  }, [projectStaff, rosterMatrix, daysInMonth, selectedDay]);
 
-  // Prepare table data
-  const tableData = useMemo(() => {
-    if (!rosterData?.roster) return [];
+  // Calculate selected day's statistics
+  const selectedDayStats = useMemo(() => {
+    let working = 0;
+    let absent = 0;
+    let leave = 0;
+    let off = 0;
 
-    return Object.values(rosterData.roster.matrix).map(({ staff, days }) => ({
-      key: staff.id,
-      staff,
-      days,
-    }));
-  }, [rosterData]);
+    projectStaff.forEach((staff) => {
+      const shift = rosterMatrix[staff.id]?.[selectedDay];
+      const shiftType = mockShiftTypes.find((st) => st.code === shift);
+      
+      if (shiftType?.isWorkShift) {
+        working++;
+      } else if (shift === 'ข') {
+        absent++;
+      } else if (['ป', 'ก', 'พ'].includes(shift || '')) {
+        leave++;
+      } else {
+        off++;
+      }
+    });
+
+    return { working, absent, leave, off };
+  }, [projectStaff, rosterMatrix, selectedDay]);
+
+  // Get selected day display text
+  const selectedDayDate = selectedDate.date(selectedDay);
+  const selectedDayText = selectedDayDate.format('D MMMM BBBB');
 
   return (
     <div>
       <Card
         title={
           <span style={{ fontSize: '20px', fontWeight: 'bold' }}>
-            📅 จัดการตารางเวร
+            📅 ตารางเวลาทำงาน
+            <span style={{ fontSize: '14px', fontWeight: 'normal', marginLeft: '8px', color: '#1890ff' }}>
+              (วันที่ {selectedDayText})
+            </span>
           </span>
         }
         extra={
@@ -281,9 +229,9 @@ const RosterPage: React.FC = () => {
               placeholder="เลือกโครงการ"
               style={{ width: 250 }}
               onChange={setSelectedProjectId}
-              value={selectedProjectId || undefined}
+              value={selectedProjectId}
             >
-              {projectsData?.projects?.map((p: Project) => (
+              {projects.map((p) => (
                 <Select.Option key={p.id} value={p.id}>
                   {p.name}
                 </Select.Option>
@@ -292,69 +240,139 @@ const RosterPage: React.FC = () => {
             <DatePicker
               picker="month"
               value={selectedDate}
-              onChange={(date) => date && setSelectedDate(date)}
+              onChange={(date) => {
+                if (date) {
+                  setSelectedDate(date);
+                  // Reset selected day to 1 or current day if same month
+                  if (date.year() === today.year() && date.month() === today.month()) {
+                    setSelectedDay(currentDay);
+                  } else {
+                    setSelectedDay(1);
+                  }
+                }
+              }}
               format="MMMM BBBB"
               style={{ width: 200 }}
             />
           </Space>
         }
       >
+        {/* Selected Day Statistics Dashboard */}
+        <Row gutter={16} style={{ marginBottom: 16 }}>
+          <Col span={8}>
+            <Card size="small">
+              <Statistic
+                title="เข้างาน"
+                value={selectedDayStats.working}
+                suffix="คน"
+                valueStyle={{ color: '#1890ff' }}
+              />
+            </Card>
+          </Col>
+          <Col span={8}>
+            <Card size="small">
+              <Statistic
+                title="ขาด/ลา"
+                value={selectedDayStats.absent + selectedDayStats.leave}
+                suffix="คน"
+                valueStyle={{ color: '#ff4d4f' }}
+              />
+            </Card>
+          </Col>
+          <Col span={8}>
+            <Card size="small">
+              <Statistic
+                title="วันหยุด"
+                value={selectedDayStats.off}
+                suffix="คน"
+                valueStyle={{ color: '#8c8c8c' }}
+              />
+            </Card>
+          </Col>
+        </Row>
+
         {/* Legend */}
-        <div style={{ marginBottom: 16 }}>
-          <Space wrap>
-            {SHIFT_OPTIONS.map((shift) => (
-              <Tag
-                key={shift.value}
-                color={shift.color}
-                style={{
-                  color: shift.value === 'OFF' ? '#000' : '#fff',
-                  fontWeight: 'bold',
-                }}
-              >
-                {shift.label}
-              </Tag>
+        <div style={{ 
+          marginBottom: 12, 
+          padding: '10px 12px',
+          backgroundColor: '#f5f5f5',
+          borderRadius: '6px',
+          border: '1px solid #d9d9d9'
+        }}>
+          <Space wrap size="middle">
+            <span style={{ fontWeight: 'bold', fontSize: '12px' }}>🎨 สัญลักษณ์:</span>
+            {mockShiftTypes.map((shift) => (
+              <div key={shift.code} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <div
+                  style={{
+                    width: 28,
+                    height: 20,
+                    backgroundColor: shift.color,
+                    color: shift.isWorkShift ? '#fff' : '#000',
+                    fontWeight: 'bold',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: '3px',
+                    fontSize: '10px',
+                  }}
+                >
+                  {shift.code}
+                </div>
+                <span style={{ fontSize: '11px' }}>{shift.name}</span>
+              </div>
             ))}
           </Space>
-          <div style={{ marginTop: 8, fontSize: '12px', color: '#888' }}>
-            💡 คลิกที่ช่องเพื่อสลับกะ (1 → 2 → 3 → OFF → 1)
-          </div>
         </div>
 
         {/* Roster Table */}
         <Table
           columns={columns}
-          dataSource={tableData}
-          loading={isLoading}
+          dataSource={projectStaff}
+          rowKey="id"
           pagination={false}
-          scroll={{ x: 'max-content', y: 500 }}
+          scroll={{ x: 'max-content' }}
           bordered
           size="small"
+          style={{ fontSize: '11px' }}
         />
-
-        {/* Summary Statistics */}
-        {rosterData?.roster && (
-          <Row gutter={16} style={{ marginTop: 24 }}>
-            <Col span={6}>
-              <Card>
-                <Statistic
-                  title="จำนวนพนักงาน"
-                  value={Object.keys(rosterData.roster.matrix).length}
-                  suffix="คน"
-                />
-              </Card>
-            </Col>
-            <Col span={6}>
-              <Card>
-                <Statistic
-                  title="วันในเดือน"
-                  value={rosterData.roster.daysInMonth}
-                  suffix="วัน"
-                />
-              </Card>
-            </Col>
-          </Row>
-        )}
       </Card>
+
+      {/* Shift Selection Modal */}
+      <Modal
+        title="เลือกกะ/สถานะ"
+        open={isShiftModalOpen}
+        onCancel={() => {
+          setIsShiftModalOpen(false);
+          setEditingCell(null);
+        }}
+        footer={null}
+        width={500}
+      >
+        <div style={{ padding: '20px 0' }}>
+          <p style={{ marginBottom: 16, color: '#666' }}>
+            เลือกกะหรือสถานะสำหรับวันที่ {editingCell?.day}
+          </p>
+          <Space wrap size="middle">
+            {mockShiftTypes.map((shift) => (
+              <Button
+                key={shift.code}
+                size="large"
+                style={{
+                  backgroundColor: shift.color,
+                  color: shift.isWorkShift ? '#fff' : '#000',
+                  fontWeight: 'bold',
+                  border: 'none',
+                  minWidth: 100,
+                }}
+                onClick={() => handleShiftSelect(shift.code)}
+              >
+                {shift.name}
+              </Button>
+            ))}
+          </Space>
+        </div>
+      </Modal>
     </div>
   );
 };

@@ -1,12 +1,12 @@
 import React from 'react';
 import { Layout, Menu, Avatar } from 'antd';
 import { 
-  DashboardOutlined, 
   ProjectOutlined, 
   TeamOutlined, 
   CalendarOutlined,
   BarChartOutlined,
-  UserOutlined 
+  UserOutlined,
+  SettingOutlined 
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 
@@ -18,14 +18,14 @@ const DashboardLayout: React.FC = () => {
 
   const menuItems = [
     {
-      key: '/dashboard',
-      icon: <DashboardOutlined />,
-      label: 'Dashboard',
+      key: '/dashboard/reports',
+      icon: <BarChartOutlined />,
+      label: 'รายงาน',
     },
     {
-      key: '/dashboard/projects',
-      icon: <ProjectOutlined />,
-      label: 'โครงการ',
+      key: '/dashboard/roster',
+      icon: <CalendarOutlined />,
+      label: 'ตารางเวลาทำงาน',
     },
     {
       key: '/dashboard/staff',
@@ -33,14 +33,14 @@ const DashboardLayout: React.FC = () => {
       label: 'พนักงาน',
     },
     {
-      key: '/dashboard/roster',
-      icon: <CalendarOutlined />,
-      label: 'ตารางเวร',
+      key: '/dashboard/projects',
+      icon: <ProjectOutlined />,
+      label: 'โครงการ',
     },
     {
-      key: '/dashboard/reports',
-      icon: <BarChartOutlined />,
-      label: 'รายงาน',
+      key: '/dashboard/settings',
+      icon: <SettingOutlined />,
+      label: 'ตั้งค่า',
     },
   ];
 

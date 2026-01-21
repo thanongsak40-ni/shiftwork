@@ -12,151 +12,61 @@ import {
   Select,
   message,
   Popconfirm,
-  Switch,
 } from 'antd';
 import {
   PlusOutlined,
   EditOutlined,
-  DeleteOutlined,
-  PoweroffOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import axios from 'axios';
-
-const API_URL = 'http://localhost:3001/api';
+import { useStaffStore } from '../stores/staffStore';
+import { useProjectStore } from '../stores/projectStore';
 
 interface Staff {
   id: string;
+  code: string;
   name: string;
   position: string;
   phone?: string;
   wagePerDay: number;
-  staffType: 'REGULAR' | 'SPARE';
+  availability: string;
   isActive: boolean;
-  defaultShift?: string;
-  project: {
-    id: string;
-    name: string;
-  };
-}
-
-interface Project {
-  id: string;
-  name: string;
+  projectId: string;
 }
 
 const StaffPage: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingStaff, setEditingStaff] = useState<Staff | null>(null);
-  const [selectedProjectId, setSelectedProjectId] = useState<string>('');
 
+  // Use global stores
+  const { projects } = useProjectStore();
+  const { addStaff, updateStaff, setStaffInactive, getStaffByProject } = useStaffStore();
+  
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(projects[0]?.id || '');
   const [form] = Form.useForm();
-  const queryClient = useQueryClient();
 
-  // Fetch projects for dropdown
-  const { data: projectsData } = useQuery({
-    queryKey: ['projects'],
-    queryFn: async () => {
-      const response = await axios.get(`${API_URL}/projects`, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token')}`,
-        },
-      });
-      return response.data;
-    },
-  });
-
-  // Fetch staff
-  const { data: staffData, isLoading } = useQuery({
-    queryKey: ['staff', selectedProjectId],
-    queryFn: async () => {
-      if (!selectedProjectId) return { staff: [] };
-      const response = await axios.get(`${API_URL}/staff`, {
-        params: { projectId: selectedProjectId, includeInactive: true },
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token')}`,
-        },
-      });
-      return response.data;
-    },
-    enabled: !!selectedProjectId,
-  });
-
-  // Create/Update staff mutation
-  const staffMutation = useMutation({
-    mutationFn: async (values: any) => {
-      const token = localStorage.getItem('token');
-      if (editingStaff) {
-        return axios.put(`${API_URL}/staff/${editingStaff.id}`, values, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-      }
-      return axios.post(`${API_URL}/staff`, { ...values, projectId: selectedProjectId }, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-    },
-    onSuccess: () => {
-      message.success(editingStaff ? 'แก้ไขพนักงานสำเร็จ' : 'เพิ่มพนักงานสำเร็จ');
-      queryClient.invalidateQueries({ queryKey: ['staff'] });
-      setIsModalOpen(false);
-      setEditingStaff(null);
-      form.resetFields();
-    },
-    onError: () => {
-      message.error('เกิดข้อผิดพลาด');
-    },
-  });
-
-  // Toggle status mutation
-  const toggleStatusMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const token = localStorage.getItem('token');
-      return axios.patch(`${API_URL}/staff/${id}/toggle-status`, {}, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-    },
-    onSuccess: () => {
-      message.success('เปลี่ยนสถานะพนักงานสำเร็จ');
-      queryClient.invalidateQueries({ queryKey: ['staff'] });
-    },
-  });
-
-  // Delete staff mutation
-  const deleteMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const token = localStorage.getItem('token');
-      return axios.delete(`${API_URL}/staff/${id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-    },
-    onSuccess: () => {
-      message.success('ลบพนักงานสำเร็จ');
-      queryClient.invalidateQueries({ queryKey: ['staff'] });
-    },
-    onError: (error: any) => {
-      message.error(error.response?.data?.error || 'เกิดข้อผิดพลาด');
-    },
-  });
+  // Filter staff by selected project
+  const filteredStaff = getStaffByProject(selectedProjectId);
 
   const handleCreate = () => {
-    if (!selectedProjectId) {
-      message.warning('กรุณาเลือกโครงการก่อน');
-      return;
-    }
     setEditingStaff(null);
     form.resetFields();
+    form.setFieldsValue({
+      isActive: true,
+      wagePerDay: 500,
+    });
     setIsModalOpen(true);
   };
 
   const handleEdit = (staff: Staff) => {
     setEditingStaff(staff);
     form.setFieldsValue({
+      code: staff.code,
       name: staff.name,
       position: staff.position,
       phone: staff.phone,
       wagePerDay: staff.wagePerDay,
-      staffType: staff.staffType,
-      defaultShift: staff.defaultShift,
+      isActive: staff.isActive,
+      remark: (staff as any).remark,
     });
     setIsModalOpen(true);
   };
@@ -164,25 +74,58 @@ const StaffPage: React.FC = () => {
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
-      staffMutation.mutate(values);
+      
+      if (editingStaff) {
+        updateStaff(editingStaff.id, {
+          code: values.code,
+          name: values.name,
+          position: values.position,
+          phone: values.phone,
+          wagePerDay: values.wagePerDay || 500,
+          isActive: values.isActive,
+          remark: values.remark,
+        });
+        message.success('แก้ไขพนักงานสำเร็จ');
+      } else {
+        addStaff({
+          code: values.code,
+          name: values.name,
+          position: values.position,
+          phone: values.phone,
+          wagePerDay: values.wagePerDay || 500,
+          staffType: 'REGULAR',
+          availability: 'AVAILABLE',
+          isActive: values.isActive ?? true,
+          projectId: selectedProjectId,
+          remark: values.remark,
+        });
+        message.success('เพิ่มพนักงานสำเร็จ');
+      }
+      
+      setIsModalOpen(false);
+      form.resetFields();
+      setEditingStaff(null);
     } catch (error) {
       console.error('Validation failed:', error);
     }
   };
 
+  const handleInactive = (id: string) => {
+    setStaffInactive(id);
+    message.success('เปลี่ยนสถานะพนักงานเป็น Inactive สำเร็จ');
+  };
+
   const columns = [
+    {
+      title: 'รหัส',
+      dataIndex: 'code',
+      key: 'code',
+      render: (text: string) => <Tag color="blue">{text}</Tag>,
+    },
     {
       title: 'ชื่อพนักงาน',
       dataIndex: 'name',
       key: 'name',
-      render: (text: string, record: Staff) => (
-        <Space>
-          {text}
-          {record.staffType === 'SPARE' && (
-            <Tag color="orange">สแปร์</Tag>
-          )}
-        </Space>
-      ),
     },
     {
       title: 'ตำแหน่ง',
@@ -202,22 +145,16 @@ const StaffPage: React.FC = () => {
       render: (value: number) => `฿${value.toLocaleString()}`,
     },
     {
-      title: 'กะตั้งต้น',
-      dataIndex: 'defaultShift',
-      key: 'defaultShift',
-      render: (text: string) => <Tag>{text || '1'}</Tag>,
-    },
-    {
       title: 'สถานะ',
+      dataIndex: 'isActive',
       key: 'isActive',
-      render: (_: any, record: Staff) => (
-        <Switch
-          checked={record.isActive}
-          onChange={() => toggleStatusMutation.mutate(record.id)}
-          checkedChildren="ใช้งาน"
-          unCheckedChildren="ปิด"
-        />
-      ),
+      render: (isActive: boolean) => {
+        return (
+          <Tag color={isActive ? 'green' : 'red'}>
+            {isActive ? 'Active' : 'Inactive'}
+          </Tag>
+        );
+      },
     },
     {
       title: 'จัดการ',
@@ -230,11 +167,11 @@ const StaffPage: React.FC = () => {
             onClick={() => handleEdit(record)}
           />
           <Popconfirm
-            title="ยืนยันการลบ?"
-            description="คุณแน่ใจหรือไม่? (ถ้ามีข้อมูลตารางเวรจะลบไม่ได้)"
-            onConfirm={() => deleteMutation.mutate(record.id)}
+            title="ยืนยันการเปลี่ยนสถานะ?"
+            description="คุณต้องการเปลี่ยนสถานะพนักงานเป็น Inactive หรือไม่?"
+            onConfirm={() => handleInactive(record.id)}
           >
-            <Button type="text" danger icon={<DeleteOutlined />} />
+            <Button type="text" danger icon={<StopOutlined />} title="Inactive" />
           </Popconfirm>
         </Space>
       ),
@@ -251,9 +188,9 @@ const StaffPage: React.FC = () => {
               placeholder="เลือกโครงการ"
               style={{ width: 250 }}
               onChange={setSelectedProjectId}
-              value={selectedProjectId || undefined}
+              value={selectedProjectId}
             >
-              {projectsData?.projects?.map((p: Project) => (
+              {projects.map((p) => (
                 <Select.Option key={p.id} value={p.id}>
                   {p.name}
                 </Select.Option>
@@ -267,10 +204,8 @@ const StaffPage: React.FC = () => {
       >
         <Table
           columns={columns}
-          dataSource={staffData?.staff || []}
-          loading={isLoading}
+          dataSource={filteredStaff}
           rowKey="id"
-          rowClassName={(record) => (!record.isActive ? 'inactive-row' : '')}
         />
       </Card>
 
@@ -280,10 +215,17 @@ const StaffPage: React.FC = () => {
         open={isModalOpen}
         onOk={handleSubmit}
         onCancel={() => setIsModalOpen(false)}
-        confirmLoading={staffMutation.isPending}
         width={600}
       >
         <Form form={form} layout="vertical" style={{ marginTop: 20 }}>
+          <Form.Item
+            label="รหัสพนักงาน"
+            name="code"
+            rules={[{ required: true, message: 'กรุณากรอกรหัสพนักงาน' }]}
+          >
+            <Input placeholder="เช่น A01" />
+          </Form.Item>
+
           <Form.Item
             label="ชื่อพนักงาน"
             name="name"
@@ -305,54 +247,37 @@ const StaffPage: React.FC = () => {
           </Form.Item>
 
           <Form.Item
-            label="ค่าแรงต่อวัน (บาท)"
+            label="ค่าแรง/วัน (บาท)"
             name="wagePerDay"
-            rules={[
-              { required: true, message: 'กรุณากรอกค่าแรง' },
-              { type: 'number', min: 0, message: 'ค่าแรงต้องมากกว่า 0' },
-            ]}
+            rules={[{ required: true, message: 'กรุณากรอกค่าแรงต่อวัน' }]}
           >
             <InputNumber
-              style={{ width: '100%' }}
-              placeholder="350"
+              placeholder="500"
               min={0}
+              style={{ width: '100%' }}
               formatter={(value) => `฿ ${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
             />
           </Form.Item>
 
           <Form.Item
-            label="ประเภทพนักงาน"
-            name="staffType"
-            initialValue="REGULAR"
+            label="สถานะการทำงาน"
+            name="isActive"
+            rules={[{ required: true, message: 'กรุณาเลือกสถานะการทำงาน' }]}
           >
-            <Select>
-              <Select.Option value="REGULAR">พนักงานประจำ</Select.Option>
-              <Select.Option value="SPARE">พนักงานสแปร์</Select.Option>
+            <Select placeholder="เลือกสถานะ">
+              <Select.Option value={true}>Active</Select.Option>
+              <Select.Option value={false}>Inactive</Select.Option>
             </Select>
           </Form.Item>
 
           <Form.Item
-            label="กะทำงานตั้งต้น"
-            name="defaultShift"
-            initialValue="1"
+            label="หมายเหตุ"
+            name="remark"
           >
-            <Select>
-              <Select.Option value="1">กะ 1</Select.Option>
-              <Select.Option value="2">กะ 2</Select.Option>
-              <Select.Option value="3">กะ 3</Select.Option>
-              <Select.Option value="ดึก">ดึก</Select.Option>
-              <Select.Option value="OFF">OFF</Select.Option>
-            </Select>
+            <Input.TextArea rows={3} placeholder="หมายเหตุเพิ่มเติม (ถ้ามี)" />
           </Form.Item>
         </Form>
       </Modal>
-
-      <style>{`
-        .inactive-row {
-          background-color: #f5f5f5;
-          opacity: 0.6;
-        }
-      `}</style>
     </div>
   );
 };

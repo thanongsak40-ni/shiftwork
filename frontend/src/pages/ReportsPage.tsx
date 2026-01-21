@@ -1,8 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Card,
   Select,
-  Button,
   Space,
   Table,
   DatePicker,
@@ -11,184 +10,245 @@ import {
   Col,
   Statistic,
   Tag,
+  Tooltip,
+  Divider,
+  Button,
   message,
 } from 'antd';
 import {
-  DownloadOutlined,
-  FileExcelOutlined,
   DollarOutlined,
+  InfoCircleOutlined,
+  DownloadOutlined,
 } from '@ant-design/icons';
-import { useQuery } from '@tanstack/react-query';
-import axios from 'axios';
 import dayjs, { Dayjs } from 'dayjs';
 import 'dayjs/locale/th';
 import buddhistEra from 'dayjs/plugin/buddhistEra';
-import * as XLSX from 'xlsx';
+import { mockRosterEntries, mockShiftTypes } from '../data/mockData';
+import { useRosterStore } from '../stores/rosterStore';
+import { useProjectStore } from '../stores/projectStore';
+import { useStaffStore } from '../stores/staffStore';
+import { useSettingsStore } from '../stores/settingsStore';
+import { generateMonthlyReport } from '../utils/pdfGenerator';
 
 dayjs.extend(buddhistEra);
 dayjs.locale('th');
 
-const API_URL = 'http://localhost:3001/api';
-
-interface Project {
-  id: string;
-  name: string;
-}
-
-interface StaffAttendance {
-  staffId: string;
-  staffName: string;
-  position: string;
-  wagePerDay: number;
-  totalWorkDays: number;
-  totalAbsent: number;
-  totalSickLeave: number;
-  totalPersonalLeave: number;
-  totalVacation: number;
-  totalLate: number;
-  deductionAmount: number;
-  expectedSalary: number;
-  netSalary: number;
-}
-
-interface DeductionReport {
-  projectId: string;
-  projectName: string;
-  year: number;
-  month: number;
-  staff: StaffAttendance[];
-  totals: {
-    totalWorkDays: number;
-    totalAbsent: number;
-    totalSickLeave: number;
-    totalPersonalLeave: number;
-    totalVacation: number;
-    totalDeduction: number;
-    totalExpectedSalary: number;
-    totalNetSalary: number;
-  };
-}
-
-interface CostSharingCalculation {
-  projectId: string;
-  projectName: string;
-  originalCost: number;
-  sharedOut: number;
-  sharedIn: number;
-  netCost: number;
-}
-
 const ReportsPage: React.FC = () => {
-  const [selectedProjectId, setSelectedProjectId] = useState<string>('');
+  // Use global stores
+  const { projects, getProject } = useProjectStore();
+  const { getStaffByProject, staff: allStaff } = useStaffStore();
+  const { rosterChanges } = useRosterStore();
+  const { deductionConfig } = useSettingsStore();
+  
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(projects[0]?.id || '');
   const [selectedDate, setSelectedDate] = useState<Dayjs>(dayjs());
-  const [activeTab, setActiveTab] = useState('deduction');
+  const [activeTab, setActiveTab] = useState('attendance');
 
-  const year = selectedDate.year() + 543;
+  const year = selectedDate.year();
   const month = selectedDate.month() + 1;
 
-  // Fetch projects
-  const { data: projectsData } = useQuery({
-    queryKey: ['projects'],
-    queryFn: async () => {
-      const response = await axios.get(`${API_URL}/projects`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-      });
-      return response.data;
-    },
-  });
+  // Filter staff by project using store - only active staff
+  const projectStaff = getStaffByProject(selectedProjectId).filter(staff => staff.isActive);
+  
+  // Get current project from store
+  const currentProject = getProject(selectedProjectId);
 
-  // Fetch deduction report
-  const { data: deductionData, isLoading: deductionLoading } = useQuery<{
-    report: DeductionReport;
-  }>({
-    queryKey: ['report-deduction', selectedProjectId, year, month],
-    queryFn: async () => {
-      const response = await axios.get(`${API_URL}/reports/deduction`, {
-        params: { projectId: selectedProjectId, year, month },
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-      });
-      return response.data;
-    },
-    enabled: !!selectedProjectId && activeTab === 'deduction',
-  });
-
-  // Fetch cost sharing report
-  const { data: costSharingData, isLoading: costSharingLoading } = useQuery<{
-    report: {
-      year: number;
-      month: number;
-      projects: CostSharingCalculation[];
-      grandTotals: {
-        originalCost: number;
-        sharedOut: number;
-        sharedIn: number;
-        netCost: number;
-      };
-    };
-  }>({
-    queryKey: ['report-cost-sharing', year, month],
-    queryFn: async () => {
-      const response = await axios.get(`${API_URL}/reports/cost-sharing`, {
-        params: { year, month },
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-      });
-      return response.data;
-    },
-    enabled: activeTab === 'cost-sharing',
-  });
-
-  // Export to CSV
-  const handleExportCSV = async () => {
-    try {
-      const response = await axios.get(`${API_URL}/reports/export`, {
-        params: { projectId: selectedProjectId, year, month },
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-        responseType: 'blob',
-      });
-
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `report_${selectedProjectId}_${year}_${month}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-
-      message.success('ดาวน์โหลดรายงานสำเร็จ');
-    } catch (error) {
-      message.error('เกิดข้อผิดพลาดในการดาวน์โหลด');
+  // Calculate deduction for a specific staff member
+  const calculateStaffDeduction = (staffId: string) => {
+    const daysInMonth = selectedDate.daysInMonth();
+    let totalAbsent = 0;
+    let totalLate = 0;
+    let totalSickLeave = 0;
+    
+    for (let day = 1; day <= daysInMonth; day++) {
+      const originalEntry = mockRosterEntries.find(
+        (e) => e.staffId === staffId && e.day === day
+      );
+      const originalShift = originalEntry?.shiftCode || 'OFF';
+      const currentShift = rosterChanges[staffId]?.[day] || originalShift;
+      
+      if (currentShift === 'ข') {
+        totalAbsent++;
+      } else if (currentShift === 'ป') {
+        totalSickLeave++;
+      } else if (currentShift === 'ส') {
+        totalLate++;
+      }
     }
+    
+    // Calculate deductions based on settings
+    const absentDeduction = totalAbsent * deductionConfig.absentDeductionPerDay;
+    const lateDeduction = totalLate * deductionConfig.lateDeductionPerTime;
+    const excessSickDays = Math.max(0, totalSickLeave - deductionConfig.maxSickLeaveDaysPerMonth);
+    const sickLeaveDeduction = excessSickDays * deductionConfig.sickLeaveDeductionPerDay;
+    
+    return {
+      totalAbsent,
+      totalLate,
+      totalSickLeave,
+      absentDeduction,
+      lateDeduction,
+      sickLeaveDeduction,
+      totalDeduction: absentDeduction + lateDeduction + sickLeaveDeduction,
+    };
   };
 
-  // Export to Excel
-  const handleExportExcel = () => {
-    if (!deductionData?.report) return;
+  // Calculate deductions received FROM other projects (other projects share TO this project)
+  const receivedDeductions = useMemo(() => {
+    let totalReceived = 0;
+    const details: { projectName: string; amount: number; percentage: number }[] = [];
+    
+    // Loop through all projects to find ones that share costs TO this project
+    projects.forEach((project) => {
+      if (project.id === selectedProjectId) return; // Skip current project
+      
+      const costSharing = (project as any).costSharing || [];
+      const sharingToThisProject = costSharing.find(
+        (cs: any) => cs.destinationProjectId === selectedProjectId
+      );
+      
+      if (sharingToThisProject) {
+        // Calculate total deduction for ALL staff in that project
+        const staffInProject = allStaff.filter((s) => s.projectId === project.id);
+        let projectTotalDeduction = 0;
+        
+        staffInProject.forEach((staff) => {
+          const deduction = calculateStaffDeduction(staff.id);
+          projectTotalDeduction += deduction.totalDeduction;
+        });
+        
+        // Calculate amount shared to this project
+        const sharedAmount = (projectTotalDeduction * sharingToThisProject.percentage) / 100;
+        
+        if (sharedAmount > 0) {
+          totalReceived += sharedAmount;
+          details.push({
+            projectName: project.name,
+            amount: sharedAmount,
+            percentage: sharingToThisProject.percentage,
+          });
+        }
+      }
+    });
+    
+    return { totalReceived, details };
+  }, [projects, selectedProjectId, allStaff, selectedDate, rosterChanges, deductionConfig]);
 
-    const ws = XLSX.utils.json_to_sheet(
-      deductionData.report.staff.map((s) => ({
-        ชื่อพนักงาน: s.staffName,
-        ตำแหน่ง: s.position,
-        'ค่าแรง/วัน': s.wagePerDay,
-        วันทำงาน: s.totalWorkDays,
-        ขาด: s.totalAbsent,
-        ลาป่วย: s.totalSickLeave,
-        ลากิจ: s.totalPersonalLeave,
-        พักร้อน: s.totalVacation,
-        เงินเดือนคาดหวัง: s.expectedSalary,
-        หักเงิน: s.deductionAmount,
-        เงินเดือนสุทธิ: s.netSalary,
-      }))
+  // Calculate attendance data dynamically from roster entries
+  const attendanceData = useMemo(() => {
+    const daysInMonth = selectedDate.daysInMonth();
+    
+    return projectStaff.map((staff) => {
+      let totalWorkDays = 0;
+      let totalAbsent = 0;
+      let totalSickLeave = 0;
+      let totalPersonalLeave = 0;
+      let totalVacation = 0;
+      let totalLeave = 0; // รวมการลาทุกประเภท
+      
+      // Count days from roster entries + changes
+      for (let day = 1; day <= daysInMonth; day++) {
+        // Get original shift from mock data
+        const originalEntry = mockRosterEntries.find(
+          (e) => e.staffId === staff.id && e.day === day
+        );
+        const originalShift = originalEntry?.shiftCode || 'OFF';
+        
+        // Get current shift (with changes applied) - use rosterChanges directly
+        const currentShift = rosterChanges[staff.id]?.[day] || originalShift;
+        
+        // Find shift type
+        const shiftType = mockShiftTypes.find((st) => st.code === currentShift);
+        
+        // Count based on shift type
+        if (shiftType?.isWorkShift) {
+          totalWorkDays++;
+        } else if (currentShift === 'ข') {
+          totalAbsent++;
+        } else if (currentShift === 'ป') {
+          totalSickLeave++;
+          totalLeave++; // นับรวมในการลา
+        } else if (currentShift === 'ก') {
+          totalPersonalLeave++;
+          totalLeave++; // นับรวมในการลา
+        } else if (currentShift === 'พ') {
+          totalVacation++;
+          totalLeave++; // นับรวมในการลา
+        }
+      }
+      
+      // Calculate deduction using deduction config
+      const absentDeduction = totalAbsent * deductionConfig.absentDeductionPerDay;
+      const excessSickDays = Math.max(0, totalSickLeave - deductionConfig.maxSickLeaveDaysPerMonth);
+      const sickLeaveDeduction = excessSickDays * deductionConfig.sickLeaveDeductionPerDay;
+      const totalDeductionRaw = absentDeduction + sickLeaveDeduction;
+      
+      // Calculate shared deduction (how much THIS project shares to others)
+      let ownProjectDeduction = totalDeductionRaw;
+      let sharedToOthers = 0;
+      
+      // If current project has cost sharing settings (sharing TO others)
+      if (currentProject && (currentProject as any).costSharing && (currentProject as any).costSharing.length > 0) {
+        const costSharing = (currentProject as any).costSharing;
+        const sharedPercentages = costSharing.reduce((sum: number, cs: any) => sum + (cs.percentage || 0), 0);
+        const thisProjectPercentage = 100 - sharedPercentages;
+        ownProjectDeduction = (totalDeductionRaw * thisProjectPercentage) / 100;
+        sharedToOthers = totalDeductionRaw - ownProjectDeduction;
+      }
+      
+      return {
+        staffId: staff.id,
+        staffName: staff.name,
+        position: staff.position,
+        wagePerDay: staff.wagePerDay,
+        totalWorkDays,
+        totalAbsent,
+        totalSickLeave,
+        totalPersonalLeave,
+        totalVacation,
+        totalLeave,
+        originalDeduction: totalDeductionRaw,
+        ownProjectDeduction, // โครงการตัวเอง (หลังหักส่วนที่แชร์ไป)
+        sharedToOthers, // ส่วนที่แชร์ไปโครงการอื่น
+        expectedSalary: totalWorkDays * staff.wagePerDay,
+        netSalary: totalWorkDays * staff.wagePerDay - ownProjectDeduction,
+      };
+    });
+  }, [projectStaff, currentProject, selectedDate, rosterChanges, deductionConfig]);
+
+  // Calculate totals
+  const totals = useMemo(() => {
+    const base = attendanceData.reduce(
+      (acc, curr) => ({
+        totalWorkDays: acc.totalWorkDays + curr.totalWorkDays,
+        totalAbsent: acc.totalAbsent + curr.totalAbsent,
+        totalLeave: acc.totalLeave + curr.totalLeave,
+        ownDeduction: acc.ownDeduction + curr.ownProjectDeduction,
+        sharedToOthers: acc.sharedToOthers + curr.sharedToOthers,
+        totalExpectedSalary: acc.totalExpectedSalary + curr.expectedSalary,
+      }),
+      {
+        totalWorkDays: 0,
+        totalAbsent: 0,
+        totalLeave: 0,
+        ownDeduction: 0,
+        sharedToOthers: 0,
+        totalExpectedSalary: 0,
+      }
     );
+    
+    // Grand total = own deduction + received from others
+    const grandTotalDeduction = base.ownDeduction + receivedDeductions.totalReceived;
+    
+    return {
+      ...base,
+      receivedFromOthers: receivedDeductions.totalReceived,
+      grandTotalDeduction,
+    };
+  }, [attendanceData, receivedDeductions]);
 
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'รายงาน');
-    XLSX.writeFile(wb, `report_${selectedProjectId}_${year}_${month}.xlsx`);
-
-    message.success('ดาวน์โหลดรายงานสำเร็จ');
-  };
-
-  // Deduction report columns
-  const deductionColumns = [
+  // Attendance report columns
+  const attendanceColumns = [
     {
       title: 'ชื่อพนักงาน',
       dataIndex: 'staffName',
@@ -218,95 +278,67 @@ const ReportsPage: React.FC = () => {
       render: (value: number) => value > 0 ? <Tag color="red">{value}</Tag> : '-',
     },
     {
-      title: 'ลาป่วย',
-      dataIndex: 'totalSickLeave',
-      key: 'totalSickLeave',
-      render: (value: number) => value > 0 ? <Tag color="orange">{value}</Tag> : '-',
+      title: 'ลา',
+      dataIndex: 'totalLeave',
+      key: 'totalLeave',
+      render: (value: number) => value > 0 ? <Tag color="blue">{value}</Tag> : '-',
     },
     {
-      title: 'ลากิจ',
-      dataIndex: 'totalPersonalLeave',
-      key: 'totalPersonalLeave',
-      render: (value: number) => value > 0 ? <Tag color="orange">{value}</Tag> : '-',
-    },
-    {
-      title: 'พักร้อน',
-      dataIndex: 'totalVacation',
-      key: 'totalVacation',
-      render: (value: number) => value > 0 ? <Tag color="cyan">{value}</Tag> : '-',
-    },
-    {
-      title: 'เงินเดือนคาดหวัง',
-      dataIndex: 'expectedSalary',
-      key: 'expectedSalary',
-      render: (value: number) => `฿${value.toLocaleString()}`,
-    },
-    {
-      title: 'หักเงิน',
-      dataIndex: 'deductionAmount',
-      key: 'deductionAmount',
+      title: (
+        <Tooltip title="หักเงินหลังแชร์ Cost ไปโครงการอื่นแล้ว">
+          หักเงิน (โครงการนี้) <InfoCircleOutlined />
+        </Tooltip>
+      ),
+      dataIndex: 'ownProjectDeduction',
+      key: 'ownProjectDeduction',
       render: (value: number) => (
         <span style={{ color: 'red', fontWeight: 'bold' }}>
           {value > 0 ? `-฿${value.toLocaleString()}` : '-'}
         </span>
       ),
     },
-    {
-      title: 'เงินเดือนสุทธิ',
-      dataIndex: 'netSalary',
-      key: 'netSalary',
-      render: (value: number) => (
-        <span style={{ fontWeight: 'bold', color: '#52c41a' }}>
-          ฿{value.toLocaleString()}
-        </span>
-      ),
-    },
   ];
 
-  // Cost sharing columns
-  const costSharingColumns = [
-    {
-      title: 'โครงการ',
-      dataIndex: 'projectName',
-      key: 'projectName',
-    },
-    {
-      title: 'ต้นทุนเดิม',
-      dataIndex: 'originalCost',
-      key: 'originalCost',
-      render: (value: number) => `฿${value.toLocaleString()}`,
-    },
-    {
-      title: 'แชร์ออก',
-      dataIndex: 'sharedOut',
-      key: 'sharedOut',
-      render: (value: number) => (
-        <span style={{ color: 'red' }}>
-          {value > 0 ? `-฿${value.toLocaleString()}` : '-'}
-        </span>
-      ),
-    },
-    {
-      title: 'รับแชร์',
-      dataIndex: 'sharedIn',
-      key: 'sharedIn',
-      render: (value: number) => (
-        <span style={{ color: 'green' }}>
-          {value > 0 ? `+฿${value.toLocaleString()}` : '-'}
-        </span>
-      ),
-    },
-    {
-      title: 'ต้นทุนสุทธิ',
-      dataIndex: 'netCost',
-      key: 'netCost',
-      render: (value: number) => (
-        <span style={{ fontWeight: 'bold', fontSize: '16px' }}>
-          ฿{value.toLocaleString()}
-        </span>
-      ),
-    },
-  ];
+  // Handle PDF download
+  const handleDownloadPDF = () => {
+    if (!currentProject) {
+      message.error('กรุณาเลือกโครงการ');
+      return;
+    }
+
+    // Prepare roster data for PDF
+    const daysInMonth = selectedDate.daysInMonth();
+    const rosterDataForPDF: { [staffId: string]: { [day: number]: string } } = {};
+    
+    projectStaff.forEach((staff) => {
+      rosterDataForPDF[staff.id] = {};
+      for (let day = 1; day <= daysInMonth; day++) {
+        const originalEntry = mockRosterEntries.find(
+          (e) => e.staffId === staff.id && e.day === day
+        );
+        const originalShift = originalEntry?.shiftCode || 'OFF';
+        const currentShift = rosterChanges[staff.id]?.[day] || originalShift;
+        rosterDataForPDF[staff.id][day] = currentShift;
+      }
+    });
+
+    generateMonthlyReport({
+      project: currentProject,
+      month: selectedDate,
+      staff: projectStaff,
+      rosterData: rosterDataForPDF,
+      shiftTypes: mockShiftTypes,
+      summary: {
+        totalAbsent: totals.totalAbsent,
+        ownDeduction: totals.ownDeduction,
+        receivedFromOthers: totals.receivedFromOthers,
+        receivedDetails: receivedDeductions.details,
+        grandTotalDeduction: totals.grandTotalDeduction,
+      },
+    });
+
+    message.success('กำลังดาวน์โหลดรายงาน PDF');
+  };
 
   return (
     <div>
@@ -318,20 +350,18 @@ const ReportsPage: React.FC = () => {
         }
         extra={
           <Space>
-            {activeTab === 'deduction' && (
-              <Select
-                placeholder="เลือกโครงการ"
-                style={{ width: 250 }}
-                onChange={setSelectedProjectId}
-                value={selectedProjectId || undefined}
-              >
-                {projectsData?.projects?.map((p: Project) => (
-                  <Select.Option key={p.id} value={p.id}>
-                    {p.name}
-                  </Select.Option>
-                ))}
-              </Select>
-            )}
+            <Select
+              placeholder="เลือกโครงการ"
+              style={{ width: 250 }}
+              onChange={setSelectedProjectId}
+              value={selectedProjectId}
+            >
+              {projects.map((p) => (
+                <Select.Option key={p.id} value={p.id}>
+                  {p.name}
+                </Select.Option>
+              ))}
+            </Select>
             <DatePicker
               picker="month"
               value={selectedDate}
@@ -339,6 +369,13 @@ const ReportsPage: React.FC = () => {
               format="MMMM BBBB"
               style={{ width: 200 }}
             />
+            <Button
+              type="primary"
+              icon={<DownloadOutlined />}
+              onClick={handleDownloadPDF}
+            >
+              ดาวน์โหลด PDF
+            </Button>
           </Space>
         }
       >
@@ -347,141 +384,135 @@ const ReportsPage: React.FC = () => {
           onChange={setActiveTab}
           items={[
             {
-              key: 'deduction',
-              label: '📝 รายงานหักเงิน',
+              key: 'attendance',
+              label: '📝 รายงานการเข้าทำงาน',
               children: (
                 <div>
                   {/* Summary Cards */}
-                  {deductionData?.report && (
-                    <Row gutter={16} style={{ marginBottom: 24 }}>
-                      <Col span={6}>
-                        <Card>
-                          <Statistic
-                            title="จำนวนพนักงาน"
-                            value={deductionData.report.staff.length}
-                            suffix="คน"
-                          />
-                        </Card>
-                      </Col>
-                      <Col span={6}>
-                        <Card>
-                          <Statistic
-                            title="วันทำงานทั้งหมด"
-                            value={deductionData.report.totals.totalWorkDays}
-                            suffix="วัน"
-                          />
-                        </Card>
-                      </Col>
-                      <Col span={6}>
-                        <Card>
-                          <Statistic
-                            title="ยอดหักเงินทั้งหมด"
-                            value={deductionData.report.totals.totalDeduction}
-                            prefix="฿"
-                            valueStyle={{ color: '#ff4d4f' }}
-                          />
-                        </Card>
-                      </Col>
-                      <Col span={6}>
-                        <Card>
-                          <Statistic
-                            title="เงินเดือนสุทธิทั้งหมด"
-                            value={deductionData.report.totals.totalNetSalary}
-                            prefix="฿"
-                            valueStyle={{ color: '#52c41a' }}
-                          />
-                        </Card>
-                      </Col>
-                    </Row>
+                  <Row gutter={16} style={{ marginBottom: 24 }}>
+                    <Col span={4}>
+                      <Card>
+                        <Statistic
+                          title="จำนวนพนักงาน"
+                          value={attendanceData.length}
+                          suffix="คน"
+                        />
+                      </Card>
+                    </Col>
+                    <Col span={4}>
+                      <Card>
+                        <Statistic
+                          title="ขาดงานรวม"
+                          value={totals.totalAbsent}
+                          suffix="วัน"
+                          valueStyle={{ color: '#ff4d4f' }}
+                        />
+                      </Card>
+                    </Col>
+                    <Col span={4}>
+                      <Card>
+                        <Statistic
+                          title={
+                            <Tooltip title="ยอดหักเงินของโครงการนี้ (หลังหักส่วนที่แชร์ไปโครงการอื่นแล้ว)">
+                              หักเงิน (โครงการนี้) <InfoCircleOutlined />
+                            </Tooltip>
+                          }
+                          value={totals.ownDeduction}
+                          prefix="฿"
+                          valueStyle={{ color: '#ff4d4f' }}
+                        />
+                      </Card>
+                    </Col>
+                    <Col span={4}>
+                      <Card>
+                        <Statistic
+                          title={
+                            <Tooltip title={
+                              receivedDeductions.details.length > 0
+                                ? receivedDeductions.details.map(d => 
+                                    `${d.projectName}: ฿${d.amount.toLocaleString()} (${d.percentage}%)`
+                                  ).join('\n')
+                                : 'ไม่มีโครงการอื่นแชร์มา'
+                            }>
+                              หักเงิน (จากโครงการอื่น) <InfoCircleOutlined />
+                            </Tooltip>
+                          }
+                          value={totals.receivedFromOthers}
+                          prefix="฿"
+                          valueStyle={{ color: '#fa8c16' }}
+                        />
+                      </Card>
+                    </Col>
+                    <Col span={4}>
+                      <Card style={{ background: '#fff2f0', borderColor: '#ffccc7' }}>
+                        <Statistic
+                          title={
+                            <span style={{ fontWeight: 'bold' }}>
+                              💰 หักเงินรวมทั้งหมด
+                            </span>
+                          }
+                          value={totals.grandTotalDeduction}
+                          prefix="฿"
+                          valueStyle={{ color: '#cf1322', fontWeight: 'bold' }}
+                        />
+                      </Card>
+                    </Col>
+                  </Row>
+
+                  {/* Cost Sharing Info */}
+                  {receivedDeductions.details.length > 0 && (
+                    <Card 
+                      size="small" 
+                      style={{ marginBottom: 16, background: '#fffbe6', borderColor: '#ffe58f' }}
+                    >
+                      <Row align="middle">
+                        <Col span={24}>
+                          <span style={{ fontWeight: 'bold', marginRight: 8 }}>📤 รับค่าใช้จ่ายจากโครงการอื่น:</span>
+                          <Space split={<Divider type="vertical" />}>
+                            {receivedDeductions.details.map((detail, index) => (
+                              <Tag key={index} color="orange">
+                                {detail.projectName}: ฿{detail.amount.toLocaleString()} ({detail.percentage}%)
+                              </Tag>
+                            ))}
+                          </Space>
+                        </Col>
+                      </Row>
+                    </Card>
                   )}
 
-                  {/* Action Buttons */}
-                  <Space style={{ marginBottom: 16 }}>
-                    <Button
-                      type="primary"
-                      icon={<DownloadOutlined />}
-                      onClick={handleExportCSV}
-                      disabled={!selectedProjectId}
+                  {/* Cost Sharing to Others Info */}
+                  {currentProject && (currentProject as any).costSharing?.length > 0 && (
+                    <Card 
+                      size="small" 
+                      style={{ marginBottom: 16, background: '#f6ffed', borderColor: '#b7eb8f' }}
                     >
-                      ดาวน์โหลด CSV
-                    </Button>
-                    <Button
-                      icon={<FileExcelOutlined />}
-                      onClick={handleExportExcel}
-                      disabled={!selectedProjectId}
-                    >
-                      ดาวน์โหลด Excel
-                    </Button>
-                  </Space>
+                      <Row align="middle">
+                        <Col span={24}>
+                          <span style={{ fontWeight: 'bold', marginRight: 8 }}>📥 แชร์ค่าใช้จ่ายไปโครงการอื่น:</span>
+                          <Space split={<Divider type="vertical" />}>
+                            {((currentProject as any).costSharing || []).map((cs: any, index: number) => {
+                              const destProject = getProject(cs.destinationProjectId);
+                              return (
+                                <Tag key={index} color="green">
+                                  {destProject?.name || 'ไม่ทราบ'}: {cs.percentage}%
+                                </Tag>
+                              );
+                            })}
+                          </Space>
+                          <Tag color="blue" style={{ marginLeft: 8 }}>
+                            โครงการนี้รับภาระ: {100 - ((currentProject as any).costSharing || []).reduce((sum: number, cs: any) => sum + (cs.percentage || 0), 0)}%
+                          </Tag>
+                        </Col>
+                      </Row>
+                    </Card>
+                  )}
 
                   {/* Report Table */}
                   <Table
-                    columns={deductionColumns}
-                    dataSource={deductionData?.report?.staff || []}
-                    loading={deductionLoading}
+                    columns={attendanceColumns}
+                    dataSource={attendanceData}
                     rowKey="staffId"
                     pagination={{ pageSize: 20 }}
-                  />
-                </div>
-              ),
-            },
-            {
-              key: 'cost-sharing',
-              label: '💰 รายงาน Cost Sharing',
-              children: (
-                <div>
-                  {/* Grand Totals */}
-                  {costSharingData?.report && (
-                    <Row gutter={16} style={{ marginBottom: 24 }}>
-                      <Col span={6}>
-                        <Card>
-                          <Statistic
-                            title="ต้นทุนเดิมรวม"
-                            value={costSharingData.report.grandTotals.originalCost}
-                            prefix="฿"
-                          />
-                        </Card>
-                      </Col>
-                      <Col span={6}>
-                        <Card>
-                          <Statistic
-                            title="แชร์ออกรวม"
-                            value={costSharingData.report.grandTotals.sharedOut}
-                            prefix="฿"
-                            valueStyle={{ color: '#ff4d4f' }}
-                          />
-                        </Card>
-                      </Col>
-                      <Col span={6}>
-                        <Card>
-                          <Statistic
-                            title="รับแชร์รวม"
-                            value={costSharingData.report.grandTotals.sharedIn}
-                            prefix="฿"
-                            valueStyle={{ color: '#52c41a' }}
-                          />
-                        </Card>
-                      </Col>
-                      <Col span={6}>
-                        <Card>
-                          <Statistic
-                            title="ต้นทุนสุทธิรวม"
-                            value={costSharingData.report.grandTotals.netCost}
-                            prefix="฿"
-                            valueStyle={{ color: '#1890ff', fontWeight: 'bold' }}
-                          />
-                        </Card>
-                      </Col>
-                    </Row>
-                  )}
-
-                  {/* Cost Sharing Table */}
-                  <Table
-                    columns={costSharingColumns}
-                    dataSource={costSharingData?.report?.projects || []}
-                    loading={costSharingLoading}
-                    rowKey="projectId"
-                    pagination={false}
                   />
                 </div>
               ),

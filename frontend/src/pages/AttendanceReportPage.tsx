@@ -1,24 +1,20 @@
 import React, { useState, useMemo } from 'react';
 import {
   Card,
+  Table,
+  Select,
+  Button,
+  Space,
+  DatePicker,
+  Typography,
+  Divider,
   Row,
   Col,
   Statistic,
-  Tag,
-  Space,
-  Select,
-  DatePicker,
-  Button,
-  Divider,
-  Typography,
-  Table,
 } from 'antd';
 import {
-  ProjectOutlined,
-  TeamOutlined,
-  CalendarOutlined,
-  FileTextOutlined,
   DownloadOutlined,
+  FileTextOutlined,
   LeftOutlined,
   RightOutlined,
 } from '@ant-design/icons';
@@ -29,13 +25,15 @@ import buddhistEra from 'dayjs/plugin/buddhistEra';
 import {
   mockProjects,
   mockStaff,
+  mockRosterEntries,
   mockMonthlyAttendance,
+  mockShiftTypes,
 } from '../data/mockData';
 
 dayjs.extend(buddhistEra);
 dayjs.locale('th');
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 interface AttendanceRecord {
   id: string;
@@ -52,7 +50,7 @@ interface AttendanceRecord {
   totalHours: number;
 }
 
-const DashboardPage: React.FC = () => {
+const AttendanceReportPage: React.FC = () => {
   const [selectedProjectId, setSelectedProjectId] = useState<string>('proj-1');
   const [selectedDate, setSelectedDate] = useState<Dayjs>(dayjs());
 
@@ -62,20 +60,13 @@ const DashboardPage: React.FC = () => {
   // Get current project
   const currentProject = mockProjects.find((p) => p.id === selectedProjectId);
 
-  // Summary Statistics
-  const totalProjects = mockProjects.length;
-  const totalStaff = mockStaff.filter((s) => s.isActive).length;
-  const projectStaff = mockStaff.filter(
-    (s) => s.projectId === selectedProjectId && s.isActive
-  ).length;
-
   // Build attendance report
   const reportData = useMemo(() => {
     return mockMonthlyAttendance.map((att) => ({
       ...att,
       name: att.staff.name,
       position: att.staff.position,
-      totalHours: att.totalWorkDays * 8,
+      totalHours: att.totalWorkDays * 8, // สมมติว่า 1 วัน = 8 ชม.
     }));
   }, []);
 
@@ -100,6 +91,7 @@ const DashboardPage: React.FC = () => {
         totalDeduction: 0,
       }
     );
+
     return total;
   }, [reportData]);
 
@@ -146,7 +138,7 @@ const DashboardPage: React.FC = () => {
       ),
     },
     {
-      title: <div style={{ textAlign: 'center' }}>ขาด (วัน)</div>,
+      title: <div style={{ textAlign: 'center' }}>ชาสงาน (วัน)</div>,
       dataIndex: 'totalAbsent',
       key: 'totalAbsent',
       width: 120,
@@ -218,60 +210,9 @@ const DashboardPage: React.FC = () => {
   ];
 
   return (
-    <div>
-      <h1 style={{ marginBottom: 24, fontSize: 28 }}>
-        📊 รายงานและสรุปข้อมูล
-      </h1>
-
-      {/* Summary Cards */}
-      <Row gutter={[16, 16]}>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="จำนวนโครงการ"
-              value={totalProjects}
-              prefix={<ProjectOutlined />}
-              suffix="โครงการ"
-              valueStyle={{ color: '#3f8600' }}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="พนักงานทั้งหมด"
-              value={totalStaff}
-              prefix={<TeamOutlined />}
-              suffix="คน"
-              valueStyle={{ color: '#1890ff' }}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="พนักงานโครงการนี้"
-              value={projectStaff}
-              prefix={<TeamOutlined />}
-              suffix="คน"
-              valueStyle={{ color: '#722ed1' }}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="สถานะระบบ"
-              value="พร้อมใช้งาน"
-              prefix={<CalendarOutlined />}
-              valueStyle={{ color: '#52c41a', fontSize: 18 }}
-            />
-          </Card>
-        </Col>
-      </Row>
-
-      {/* Report Header */}
-      <Card style={{ marginTop: 24 }}>
+    <div style={{ padding: '24px' }}>
+      {/* Header */}
+      <Card>
         <Row gutter={[16, 16]} align="middle">
           <Col flex="auto">
             <Space size="large">
@@ -313,7 +254,7 @@ const DashboardPage: React.FC = () => {
       </Card>
 
       {/* Summary Statistics */}
-      <Card style={{ marginTop: 16 }}>
+      <Card style={{ marginTop: '16px' }}>
         <Title level={5}>
           <FileTextOutlined /> สรุปยอดการทำงานประจำเดือนและเงินที่ต้องหัก -{' '}
           {selectedDate.format('MMMM BBBB')}
@@ -329,7 +270,7 @@ const DashboardPage: React.FC = () => {
           </Col>
           <Col span={4}>
             <Statistic
-              title="ขาด (วัน)"
+              title="ชาสงาน (วัน)"
               value={summary.totalAbsent}
               valueStyle={{ color: '#ff4d4f' }}
             />
@@ -366,7 +307,7 @@ const DashboardPage: React.FC = () => {
       </Card>
 
       {/* Table */}
-      <Card style={{ marginTop: 16 }}>
+      <Card style={{ marginTop: '16px' }}>
         <Table
           columns={columns}
           dataSource={reportData}
@@ -426,4 +367,4 @@ const DashboardPage: React.FC = () => {
   );
 };
 
-export default DashboardPage;
+export default AttendanceReportPage;
